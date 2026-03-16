@@ -18,6 +18,9 @@
     "recharts": "^2.15.0",
     "zod": "^3.22.0"
   },
+  "engines": {
+    "node": "18.x"
+  },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.0",
     "@types/node": "^22.0.0",
