@@ -58,10 +58,6 @@ async function launchBrowser() {
   const chromium = (await import("@sparticuz/chromium")).default;
   const puppeteerCore = (await import("puppeteer-core")).default;
 
-  // @sparticuz/chromium needs to decompress its bundled binary on first run
-  chromium.setHeadlessMode = true;
-  chromium.setGraphicsMode = false;
-
   const browser = await puppeteerCore.launch({
     args: chromium.args,
     defaultViewport: { width: 1280, height: 900 },
