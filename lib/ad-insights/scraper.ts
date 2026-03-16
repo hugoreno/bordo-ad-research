@@ -84,69 +84,103 @@ export async function scrapeCompetitorAds(
 
     await page.goto(url, { waitUntil: "networkidle2", timeout: 25000 });
 
-    // Wait for ad cards to render
-    await page.waitForSelector('[class*="xrvj5dj"]', { timeout: 10000 }).catch(() => {
-      // Fallback: try other known selectors
-      return page.waitForSelector('[role="article"], [class*="ad"]', { timeout: 5000 }).catch(() => null);
-    });
+    // Wait for the page to have ad content loaded
+    await new Promise((r) => setTimeout(r, 3000));
 
     // Scroll to load more ads
-    for (let i = 0; i < 3; i++) {
-      await page.evaluate(() => window.scrollBy(0, 1000));
-      await new Promise((r) => setTimeout(r, 1500));
+    for (let i = 0; i < 5; i++) {
+      await page.evaluate(() => window.scrollBy(0, 2000));
+      await new Promise((r) => setTimeout(r, 2000));
     }
 
     // Extract ad data from the page
     const rawAds = await page.evaluate((max: number) => {
       const ads: ScrapedRawAd[] = [];
 
-      // The Ad Library renders ads in container divs. We look for the ad card containers.
-      // Meta's class names are obfuscated but the structure is consistent:
-      // Each ad has a container with the page name, ad text, and snapshot link.
-      const adContainers = document.querySelectorAll(
-        '[class*="xrvj5dj"], [role="article"]'
-      );
+      // The Ad Library page contains "Library ID:" text for each ad.
+      // We find these markers and walk up to get the containing card.
+      // Each ad card contains: Library ID, started running date, image, body text, platforms.
 
-      adContainers.forEach((container) => {
-        if (ads.length >= max) return;
+      // Strategy: find all elements containing "Library ID:" and use their
+      // ancestor container as the ad boundary.
+      const allElements = document.querySelectorAll("*");
+      const adRoots: Element[] = [];
+
+      // Find distinct ad containers by looking for "Library ID:" text
+      allElements.forEach((el) => {
+        if (el.children.length === 0 && el.textContent?.includes("Library ID:")) {
+          // Walk up to find a meaningful container (usually 5-8 levels up)
+          let container = el.parentElement;
+          for (let i = 0; i < 8 && container; i++) {
+            // Check if this container has both text content and an image
+            const hasImage = container.querySelector("img") !== null;
+            const hasDate = container.textContent?.includes("Started running on") ?? false;
+            if (hasImage && hasDate) {
+              // Make sure we haven't already captured this container
+              if (!adRoots.some((r) => r === container || r.contains(container!) || container!.contains(r))) {
+                adRoots.push(container);
+              }
+              break;
+            }
+            container = container.parentElement;
+          }
+        }
+      });
+
+      for (const container of adRoots) {
+        if (ads.length >= max) break;
 
         const allText = container.textContent || "";
 
-        // Extract text blocks - typically body text and link titles
-        const textSpans = container.querySelectorAll("span");
-        let bodyText: string | undefined;
-        let linkTitle: string | undefined;
+        // Extract Library ID
+        const libIdMatch = allText.match(/Library ID:\s*(\d+)/);
+        const libraryId = libIdMatch ? libIdMatch[1] : undefined;
 
+        // Extract date
+        const dateMatch = allText.match(/Started running on\s+([\w\s,]+?\d{4})/);
+        const startDate = dateMatch ? dateMatch[1].trim() : undefined;
+
+        // Extract all meaningful text blocks (body text, headlines)
         const textBlocks: string[] = [];
-        textSpans.forEach((span) => {
-          const t = span.textContent?.trim();
-          if (t && t.length > 10 && t.length < 500) {
-            textBlocks.push(t);
+        const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null);
+        let node: Node | null;
+        while ((node = walker.nextNode())) {
+          const t = (node.textContent || "").trim();
+          // Filter out noise: dates, Library IDs, platform names, short labels
+          if (
+            t.length > 15 &&
+            t.length < 500 &&
+            !t.includes("Library ID:") &&
+            !t.includes("Started running on") &&
+            !t.includes("See ad details") &&
+            !t.match(/^(Facebook|Instagram|Messenger|Audience Network|Active|Inactive)$/)
+          ) {
+            // Avoid duplicates
+            if (!textBlocks.some((b) => b.includes(t) || t.includes(b))) {
+              textBlocks.push(t);
+            }
+          }
+        }
+
+        // Extract images
+        const images = container.querySelectorAll("img");
+        let imageUrl: string | undefined;
+        images.forEach((img) => {
+          const src = img.getAttribute("src") || "";
+          if ((src.includes("scontent") || src.includes("fbcdn")) && !imageUrl) {
+            imageUrl = src;
           }
         });
 
-        if (textBlocks.length > 0) bodyText = textBlocks[0];
-        if (textBlocks.length > 1) linkTitle = textBlocks[1];
-
-        // Extract image
-        const img = container.querySelector("img[src*='scontent'], img[src*='fbcdn']");
-        const imageUrl = img?.getAttribute("src") || undefined;
-
-        // Extract links - the "See ad details" or snapshot link
-        const links = container.querySelectorAll("a[href*='ads/library']");
+        // Extract snapshot/detail link
+        const links = container.querySelectorAll("a");
         let snapshotUrl: string | undefined;
         links.forEach((link) => {
-          const href = link.getAttribute("href");
-          if (href && href.includes("id=")) {
+          const href = link.getAttribute("href") || "";
+          if (href.includes("ads/library") && href.includes("id=")) {
             snapshotUrl = href.startsWith("http") ? href : `https://www.facebook.com${href}`;
           }
         });
-
-        // Extract date if visible
-        const dateMatch = allText.match(
-          /Started running on ([\w\s,]+\d{4})|(\w+ \d{1,2}, \d{4})/
-        );
-        const startDate = dateMatch ? dateMatch[1] || dateMatch[2] : undefined;
 
         // Extract platform info
         const platforms: string[] = [];
@@ -155,18 +189,20 @@ export async function scrapeCompetitorAds(
         if (allText.includes("Messenger")) platforms.push("Messenger");
         if (allText.includes("Audience Network")) platforms.push("Audience Network");
 
-        if (bodyText || linkTitle || imageUrl) {
-          ads.push({
-            bodyText,
-            linkTitle,
-            linkDescription: textBlocks[2],
-            startDate,
-            snapshotUrl,
-            imageUrl,
-            platform: platforms.length > 0 ? platforms.join(", ") : undefined,
-          });
-        }
-      });
+        const bodyText = textBlocks[0];
+        const linkTitle = textBlocks.length > 1 ? textBlocks[1] : undefined;
+
+        ads.push({
+          bodyText,
+          linkTitle,
+          linkDescription: textBlocks.length > 2 ? textBlocks[2] : undefined,
+          pageName: undefined,
+          startDate,
+          snapshotUrl,
+          imageUrl,
+          platform: platforms.length > 0 ? platforms.join(", ") : undefined,
+        });
+      }
 
       return ads;
     }, maxAds);
