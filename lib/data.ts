@@ -55,9 +55,12 @@ export async function getCompetitorInsights(
   return null;
 }
 
-export async function saveSnapshot(snapshot: AdResearchSnapshot): Promise<void> {
+export async function saveSnapshot(snapshot: AdResearchSnapshot): Promise<boolean> {
   const store = await getKV();
-  if (!store) throw new Error("Vercel KV not configured");
+  if (!store) {
+    console.warn("Vercel KV not configured — snapshot not persisted");
+    return false;
+  }
   await store.set("snapshot:latest", snapshot);
   for (const comp of snapshot.competitors) {
     const config = COMPETITORS.find((c) => c.name === comp.competitor);
@@ -65,4 +68,5 @@ export async function saveSnapshot(snapshot: AdResearchSnapshot): Promise<void> 
       await store.set(`competitor:${config.slug}`, comp);
     }
   }
+  return true;
 }
