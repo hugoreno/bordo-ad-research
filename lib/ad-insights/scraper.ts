@@ -55,14 +55,17 @@ interface ScrapedRawAd {
 }
 
 async function launchBrowser() {
-  // Dynamic imports for Vercel serverless compatibility
-  const chromium = await import("@sparticuz/chromium");
-  const puppeteer = await import("puppeteer-core");
+  const chromium = (await import("@sparticuz/chromium")).default;
+  const puppeteerCore = (await import("puppeteer-core")).default;
 
-  const browser = await puppeteer.default.launch({
-    args: chromium.default.args,
-    defaultViewport: chromium.default.defaultViewport,
-    executablePath: await chromium.default.executablePath(),
+  // @sparticuz/chromium needs to decompress its bundled binary on first run
+  chromium.setHeadlessMode = true;
+  chromium.setGraphicsMode = false;
+
+  const browser = await puppeteerCore.launch({
+    args: chromium.args,
+    defaultViewport: { width: 1280, height: 900 },
+    executablePath: await chromium.executablePath(),
     headless: true,
   });
 
