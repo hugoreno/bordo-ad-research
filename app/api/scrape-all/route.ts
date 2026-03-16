@@ -1,31 +1,22 @@
 import { NextResponse } from "next/server";
-import { fetchAllCompetitors, aggregatePatterns } from "@/lib/ad-insights";
+import { scrapeAllCompetitors, aggregatePatterns } from "@/lib/ad-insights";
 import { saveSnapshot } from "@/lib/data";
 
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 export async function POST(request: Request) {
   // Verify cron secret if called from Vercel Cron
   const authHeader = request.headers.get("authorization");
   const cronSecret = process.env.CRON_SECRET;
   if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-    // Allow calls without auth if no cron secret set (manual trigger from UI)
     const body = await request.json().catch(() => ({}));
     if (!body.manual) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
   }
 
-  const accessToken = process.env.META_ACCESS_TOKEN;
-  if (!accessToken) {
-    return NextResponse.json(
-      { error: "META_ACCESS_TOKEN not configured. Go to /setup for instructions." },
-      { status: 400 }
-    );
-  }
-
   try {
-    const allInsights = await fetchAllCompetitors(accessToken, 25);
+    const allInsights = await scrapeAllCompetitors(25);
     const aggregated = aggregatePatterns(allInsights);
 
     const snapshot = {

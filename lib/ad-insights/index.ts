@@ -21,5 +21,5 @@ export {
 } from "./schemas";
 
 export { COMPETITORS, getCompetitorBySlug } from "./competitors";
-export { fetchCompetitorAds, fetchAllCompetitors } from "./meta-api";
+export { scrapeCompetitorAds, scrapeAllCompetitors } from "./scraper";
 export { aggregatePatterns } from "./analyze";

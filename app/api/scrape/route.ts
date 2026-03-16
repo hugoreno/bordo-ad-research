@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import {
-  fetchCompetitorAds,
+  scrapeCompetitorAds,
   getCompetitorBySlug,
   COMPETITORS,
   aggregatePatterns,
@@ -8,15 +8,9 @@ import {
 import type { CompetitorInsights } from "@/lib/ad-insights";
 import { saveSnapshot, getSnapshotOrSample } from "@/lib/data";
 
-export async function POST(request: Request) {
-  const accessToken = process.env.META_ACCESS_TOKEN;
-  if (!accessToken) {
-    return NextResponse.json(
-      { error: "META_ACCESS_TOKEN not configured. Go to /setup for instructions." },
-      { status: 400 }
-    );
-  }
+export const maxDuration = 30;
 
+export async function POST(request: Request) {
   const body = await request.json();
   const slug = body.competitor as string;
 
@@ -29,12 +23,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const ads = await fetchCompetitorAds(
-      config.searchTerms,
-      config.name,
-      accessToken,
-      25
-    );
+    const ads = await scrapeCompetitorAds(config.searchTerms, config.name, 25);
 
     const insights: CompetitorInsights = {
       competitor: config.name,
