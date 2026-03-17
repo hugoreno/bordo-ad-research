@@ -232,12 +232,7 @@ export async function scrapeCompetitorAds(
 
     // Download images as base64 while the browser session is active
     // Facebook CDN URLs contain temporary auth tokens that expire after hours.
-    // Remove size restrictions from URLs to get full-resolution images.
-    const imageUrls = rawAds.map((a) => {
-      if (!a.imageUrl) return "";
-      // Remove the size restriction (s60x60, s100x100, etc.) to get full res
-      return a.imageUrl.replace(/stp=dst-jpg_s\d+x\d+[^&]*/, "stp=dst-jpg");
-    }).filter(Boolean);
+    const imageUrls = rawAds.map((a) => a.imageUrl || "").filter(Boolean);
     const imageDataMap: Record<string, string> = await page.evaluate(async (urls: string[]) => {
       const results: Record<string, string> = {};
       const unique = [...new Set(urls)];
@@ -270,10 +265,7 @@ export async function scrapeCompetitorAds(
         : undefined;
 
       // Use base64 data URI if available, otherwise keep original URL as fallback
-      const fullResUrl = raw.imageUrl
-        ? raw.imageUrl.replace(/stp=dst-jpg_s\d+x\d+[^&]*/, "stp=dst-jpg")
-        : "";
-      const imageUrl = (fullResUrl && imageDataMap[fullResUrl])
+      const imageUrl = (raw.imageUrl && imageDataMap[raw.imageUrl])
         || raw.imageUrl || "";
 
       return {
