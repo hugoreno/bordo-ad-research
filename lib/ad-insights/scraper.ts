@@ -180,9 +180,11 @@ export async function scrapeCompetitorAds(
         const metaButtons = new Set([
           "Open Dropdown", "See ad details", "See summary details",
           "See All", "See Summary Details", "Report", "More", "Less",
+          "EU transparency", "Active", "Inactive",
         ]);
         buttons.forEach((btn) => {
-          const text = (btn.textContent || "").trim();
+          // Strip zero-width chars and trim
+          const text = (btn.textContent || "").replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
           if (text.length > 2 && text.length < 30 && !metaButtons.has(text) && !ctaText) {
             ctaText = text;
           }
@@ -211,10 +213,13 @@ export async function scrapeCompetitorAds(
         if (allText.includes("Messenger")) platforms.push("Messenger");
         if (allText.includes("Audience Network")) platforms.push("Audience Network");
 
+        // Clean body text: join lines, strip zero-width chars
+        const cleanBody = bodyLines.join(" ").replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
+
         ads.push({
           libraryId,
-          pageName: pageName || undefined,
-          bodyText: bodyLines.join("\n") || undefined,
+          pageName: pageName?.replace(/[\u200B-\u200D\uFEFF]/g, "").trim() || undefined,
+          bodyText: cleanBody || undefined,
           ctaText: ctaText || undefined,
           startDate: startDate || undefined,
           imageUrl: imageUrl || undefined,
