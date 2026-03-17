@@ -1,8 +1,24 @@
 {
   "crons": [
     {
-      "path": "/api/scrape-all",
+      "path": "/api/scrape?competitor=club-vegas",
       "schedule": "0 6 * * 1"
+    },
+    {
+      "path": "/api/scrape?competitor=jackpot-world",
+      "schedule": "5 6 * * 1"
+    },
+    {
+      "path": "/api/scrape?competitor=cashman-casino",
+      "schedule": "10 6 * * 1"
+    },
+    {
+      "path": "/api/scrape?competitor=quick-hit-slots",
+      "schedule": "15 6 * * 1"
+    },
+    {
+      "path": "/api/scrape?competitor=jackpot-party",
+      "schedule": "20 6 * * 1"
     }
   ]
 }

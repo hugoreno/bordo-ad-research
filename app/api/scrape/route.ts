@@ -8,12 +8,9 @@ import {
 import type { CompetitorInsights } from "@/lib/ad-insights";
 import { saveSnapshot, getSnapshotOrSample } from "@/lib/data";
 
-export const maxDuration = 30;
+export const maxDuration = 60;
 
-export async function POST(request: Request) {
-  const body = await request.json();
-  const slug = body.competitor as string;
-
+async function handleScrape(slug: string) {
   const config = getCompetitorBySlug(slug);
   if (!config) {
     return NextResponse.json(
@@ -58,4 +55,23 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   }
+}
+
+// POST: manual trigger from UI
+export async function POST(request: Request) {
+  const body = await request.json();
+  return handleScrape(body.competitor as string);
+}
+
+// GET: Vercel Cron trigger via query param
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const slug = searchParams.get("competitor");
+  if (!slug) {
+    return NextResponse.json(
+      { error: "Missing ?competitor= query parameter" },
+      { status: 400 }
+    );
+  }
+  return handleScrape(slug);
 }
