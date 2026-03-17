@@ -130,7 +130,7 @@ export async function scrapeCompetitorAds(
         if (ads.length >= max) break;
 
         // Use innerText and split into lines for reliable parsing
-        const lines = (container.innerText || "")
+        const lines = ((container as HTMLElement).innerText || "")
           .split("\n")
           .map((l: string) => l.trim())
           .filter((l: string) => l.length > 0);
