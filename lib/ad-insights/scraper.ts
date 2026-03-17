@@ -230,15 +230,49 @@ export async function scrapeCompetitorAds(
       return ads;
     }, maxAds);
 
+    // Download images as base64 while the browser session is active
+    // (Facebook CDN URLs contain temporary auth tokens that expire)
+    const imageDataMap = new Map<string, string>();
+    for (const raw of rawAds) {
+      if (!raw.imageUrl) continue;
+      if (imageDataMap.has(raw.imageUrl)) continue;
+      try {
+        const dataUri = await page.evaluate(async (url: string) => {
+          try {
+            const resp = await fetch(url);
+            if (!resp.ok) return null;
+            const blob = await resp.blob();
+            return new Promise<string | null>((resolve) => {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve(reader.result as string);
+              reader.onerror = () => resolve(null);
+              reader.readAsDataURL(blob);
+            });
+          } catch {
+            return null;
+          }
+        }, raw.imageUrl);
+        if (dataUri) {
+          imageDataMap.set(raw.imageUrl, dataUri);
+        }
+      } catch {
+        // Skip failed downloads
+      }
+    }
+
     return rawAds.map((raw, i) => {
       const adSnapshotUrl = raw.libraryId
         ? `https://www.facebook.com/ads/library/?id=${raw.libraryId}`
         : undefined;
 
+      // Use base64 data URI if available, otherwise keep original URL as fallback
+      const imageUrl = (raw.imageUrl && imageDataMap.get(raw.imageUrl))
+        || upscaleImageUrl(raw.imageUrl || "");
+
       return {
         id: `${competitorName.toLowerCase().replace(/\s+/g, "-")}-${raw.libraryId || i}`,
         competitor: competitorName,
-        imageUrl: upscaleImageUrl(raw.imageUrl || ""),
+        imageUrl,
         headline: raw.pageName || competitorName,
         bodyText: raw.bodyText,
         cta: raw.ctaText,
