@@ -235,6 +235,8 @@ export async function scrapeCompetitorAds(
     const imageDataMap = new Map<string, string>();
     for (const raw of rawAds) {
       if (!raw.imageUrl) continue;
+      // Upscale thumbnail URL before downloading
+      const fullUrl = upscaleImageUrl(raw.imageUrl);
       if (imageDataMap.has(raw.imageUrl)) continue;
       try {
         const dataUri = await page.evaluate(async (url: string) => {
@@ -251,7 +253,7 @@ export async function scrapeCompetitorAds(
           } catch {
             return null;
           }
-        }, raw.imageUrl);
+        }, fullUrl);
         if (dataUri) {
           imageDataMap.set(raw.imageUrl, dataUri);
         }
