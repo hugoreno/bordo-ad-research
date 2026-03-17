@@ -14,43 +14,53 @@ function buildSearchUrl(searchTerms: string): string {
   return `${AD_LIBRARY_BASE}?${params.toString()}`;
 }
 
-function extractCTA(text?: string): string | undefined {
-  if (!text) return undefined;
-  const ctaPatterns = [
-    /play\s*(now|free|today)/i,
-    /install\s*now/i,
-    /download\s*(now|free)/i,
-    /get\s*(it\s*)?now/i,
-    /spin\s*(now|free|&\s*win)/i,
-    /claim\s*(now|your|free)/i,
-    /join\s*(now|free|today)/i,
-    /sign\s*up/i,
-    /learn\s*more/i,
-    /shop\s*now/i,
-    /try\s*(now|free|it)/i,
-  ];
-  for (const pattern of ctaPatterns) {
-    const match = text.match(pattern);
-    if (match) return match[0];
-  }
-  return undefined;
-}
-
 // Upscale Facebook thumbnail URLs to larger images
 function upscaleImageUrl(url: string): string {
   if (!url) return url;
-  // Replace small thumbnail size params with larger ones
-  // s60x60 -> s600x600, s100x100 -> s600x600, etc.
   return url.replace(/stp=dst-jpg_s\d+x\d+/, "stp=dst-jpg_s600x600");
 }
 
 interface ScrapedRawAd {
   libraryId?: string;
+  pageName?: string;
   bodyText?: string;
-  linkTitle?: string;
+  ctaText?: string;
   startDate?: string;
   imageUrl?: string;
   platform?: string;
+}
+
+// Known Meta UI noise lines to filter out
+const NOISE_LINES = new Set([
+  "Active",
+  "Inactive",
+  "Sponsored",
+  "Ad",
+  "Ads",
+  "About",
+  "See",
+  "More",
+  "Less",
+  "Report",
+  "Open Dropdown",
+  "EU transparency",
+  "See summary details",
+  "See ad details",
+  "See All",
+  "Multiple ad versions",
+  "See Summary Details",
+  "Disclaimer",
+  "This ad has multiple versions",
+  "use this creative and text",
+]);
+
+function isNoiseLine(line: string): boolean {
+  if (NOISE_LINES.has(line)) return true;
+  if (line.startsWith("Library ID:")) return true;
+  if (line.startsWith("Started running on")) return true;
+  if (/^(Facebook|Instagram|Messenger|Audience Network)$/.test(line)) return true;
+  if (line.length <= 2) return true;
+  return false;
 }
 
 async function launchBrowser() {
@@ -82,8 +92,6 @@ export async function scrapeCompetitorAds(
     );
 
     await page.goto(url, { waitUntil: "networkidle2", timeout: 25000 });
-
-    // Wait for the page to have ad content loaded
     await new Promise((r) => setTimeout(r, 3000));
 
     // Scroll to load more ads
@@ -92,21 +100,22 @@ export async function scrapeCompetitorAds(
       await new Promise((r) => setTimeout(r, 2000));
     }
 
-    // Extract ad data from the page
     const rawAds = await page.evaluate((max: number) => {
       const ads: ScrapedRawAd[] = [];
 
-      // Find all "Library ID:" text nodes to locate ad cards
+      // Find ad card containers by locating "Library ID:" text and walking up
       const allElements = document.querySelectorAll("*");
       const adRoots: Element[] = [];
 
       allElements.forEach((el) => {
         if (el.children.length === 0 && el.textContent?.includes("Library ID:")) {
           let container = el.parentElement;
-          for (let i = 0; i < 10 && container; i++) {
+          for (let i = 0; i < 12 && container; i++) {
+            const text = container.textContent || "";
             const hasImage = container.querySelector("img") !== null;
-            const hasDate = container.textContent?.includes("Started running on") ?? false;
-            if (hasImage && hasDate) {
+            const hasSeeDetails = text.includes("See ad details") || text.includes("See summary details");
+            const hasDate = text.includes("Started running on");
+            if (hasImage && (hasSeeDetails || hasDate)) {
               if (!adRoots.some((r) => r === container || r.contains(container!) || container!.contains(r))) {
                 adRoots.push(container);
               }
@@ -120,61 +129,82 @@ export async function scrapeCompetitorAds(
       for (const container of adRoots) {
         if (ads.length >= max) break;
 
-        const allText = container.textContent || "";
+        // Use innerText and split into lines for reliable parsing
+        const lines = (container.innerText || "")
+          .split("\n")
+          .map((l: string) => l.trim())
+          .filter((l: string) => l.length > 0);
 
         // Extract Library ID
-        const libIdMatch = allText.match(/Library ID:\s*(\d+)/);
-        const libraryId = libIdMatch ? libIdMatch[1] : undefined;
+        const libIdLine = lines.find((l: string) => l.startsWith("Library ID:"));
+        const libraryId = libIdLine?.match(/Library ID:\s*(\d+)/)?.[1];
 
         // Extract date
-        const dateMatch = allText.match(/Started running on\s+([\w\s,]+?\d{4})/);
-        const startDate = dateMatch ? dateMatch[1].trim() : undefined;
+        const dateLine = lines.find((l: string) => l.startsWith("Started running on"));
+        const startDate = dateLine?.replace("Started running on", "").trim();
 
-        // Extract meaningful text blocks, filtering out Meta UI noise
-        const noisePatterns = [
-          /Library ID:/,
-          /Started running on/,
-          /See ad details/,
-          /This ad has multiple versions/,
-          /use this creative and text/,
-          /^(Facebook|Instagram|Messenger|Audience Network|Active|Inactive)$/,
-          /^(Ad|Ads|About|See|More|Less|Report)$/,
-          /Multiple ad versions/,
-          /See Summary Details/,
-        ];
-
-        const textBlocks: string[] = [];
-        const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null);
-        let node: Node | null;
-        while ((node = walker.nextNode())) {
-          const t = (node.textContent || "").trim();
-          if (t.length > 10 && t.length < 500) {
-            const isNoise = noisePatterns.some((p) => p.test(t));
-            if (!isNoise && !textBlocks.some((b) => b.includes(t) || t.includes(b))) {
-              textBlocks.push(t);
-            }
-          }
+        // Extract page name: line immediately before "Sponsored"
+        let pageName: string | undefined;
+        const sponsoredIdx = lines.indexOf("Sponsored");
+        if (sponsoredIdx > 0) {
+          pageName = lines[sponsoredIdx - 1];
         }
 
-        // Extract the best image (largest one, not tiny icons)
+        // Extract ad body: text between "Sponsored" and "See ad details" / noise
+        // These are the actual ad copy lines
+        const bodyLines: string[] = [];
+        const startIdx = sponsoredIdx >= 0 ? sponsoredIdx + 1 : 0;
+
+        const NOISE_SET = new Set([
+          "Active", "Inactive", "Sponsored", "Ad", "Ads", "About", "See",
+          "More", "Less", "Report", "Open Dropdown", "EU transparency",
+          "See summary details", "See ad details", "See All",
+          "Multiple ad versions", "See Summary Details", "Disclaimer",
+          "This ad has multiple versions", "use this creative and text",
+        ]);
+
+        for (let i = startIdx; i < lines.length; i++) {
+          const line = lines[i];
+          if (line.includes("See ad details") || line.includes("See summary details")) break;
+          if (line.startsWith("Library ID:")) break;
+          if (line.startsWith("Started running on")) break;
+          if (NOISE_SET.has(line)) continue;
+          if (/^(Facebook|Instagram|Messenger|Audience Network)$/.test(line)) continue;
+          if (line.length <= 2) continue;
+          bodyLines.push(line);
+        }
+
+        // Extract CTA from [role="button"] elements that aren't Meta UI
+        const buttons = container.querySelectorAll('[role="button"], a[role="button"]');
+        let ctaText: string | undefined;
+        const metaButtons = new Set([
+          "Open Dropdown", "See ad details", "See summary details",
+          "See All", "See Summary Details", "Report", "More", "Less",
+        ]);
+        buttons.forEach((btn) => {
+          const text = (btn.textContent || "").trim();
+          if (text.length > 2 && text.length < 30 && !metaButtons.has(text) && !ctaText) {
+            ctaText = text;
+          }
+        });
+
+        // Extract creative image (largest, from fbcdn/scontent, not UI icons)
         const images = container.querySelectorAll("img");
         let imageUrl: string | undefined;
-        let bestSize = 0;
         images.forEach((img) => {
           const src = img.getAttribute("src") || "";
+          // Skip Meta UI resource images and data URIs
+          if (src.includes("rsrc.php") || src.startsWith("data:") || src.includes("safe_image")) return;
           if (src.includes("scontent") || src.includes("fbcdn")) {
-            // Prefer images that appear larger in the DOM
-            const w = img.naturalWidth || img.width || 0;
-            const h = img.naturalHeight || img.height || 0;
-            const size = w * h;
-            if (!imageUrl || size > bestSize) {
+            // Take the first valid ad image
+            if (!imageUrl) {
               imageUrl = src;
-              bestSize = size;
             }
           }
         });
 
         // Extract platform info
+        const allText = container.textContent || "";
         const platforms: string[] = [];
         if (allText.includes("Facebook")) platforms.push("Facebook");
         if (allText.includes("Instagram")) platforms.push("Instagram");
@@ -183,10 +213,11 @@ export async function scrapeCompetitorAds(
 
         ads.push({
           libraryId,
-          bodyText: textBlocks[0],
-          linkTitle: textBlocks.length > 1 ? textBlocks[1] : undefined,
-          startDate,
-          imageUrl,
+          pageName: pageName || undefined,
+          bodyText: bodyLines.join("\n") || undefined,
+          ctaText: ctaText || undefined,
+          startDate: startDate || undefined,
+          imageUrl: imageUrl || undefined,
           platform: platforms.length > 0 ? platforms.join(", ") : undefined,
         });
       }
@@ -195,9 +226,6 @@ export async function scrapeCompetitorAds(
     }, maxAds);
 
     return rawAds.map((raw, i) => {
-      const allText = [raw.bodyText, raw.linkTitle].filter(Boolean).join(" ");
-
-      // Build snapshot URL from Library ID
       const adSnapshotUrl = raw.libraryId
         ? `https://www.facebook.com/ads/library/?id=${raw.libraryId}`
         : undefined;
@@ -206,9 +234,9 @@ export async function scrapeCompetitorAds(
         id: `${competitorName.toLowerCase().replace(/\s+/g, "-")}-${raw.libraryId || i}`,
         competitor: competitorName,
         imageUrl: upscaleImageUrl(raw.imageUrl || ""),
-        headline: raw.bodyText,
-        bodyText: raw.linkTitle,
-        cta: extractCTA(allText),
+        headline: raw.pageName || competitorName,
+        bodyText: raw.bodyText,
+        cta: raw.ctaText,
         dominantColors: [],
         layout: "hero-image-top" as const,
         scrapedAt: new Date().toISOString(),
