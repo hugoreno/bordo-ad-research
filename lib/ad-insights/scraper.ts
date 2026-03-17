@@ -1,4 +1,4 @@
-import type { CompetitorAd, CompetitorInsights, LayoutPattern } from "./types";
+import type { CompetitorAd, CompetitorInsights } from "./types";
 import { COMPETITORS } from "./competitors";
 
 const AD_LIBRARY_BASE = "https://www.facebook.com/ads/library/";
@@ -12,13 +12,6 @@ function buildSearchUrl(searchTerms: string): string {
     q: searchTerms,
   });
   return `${AD_LIBRARY_BASE}?${params.toString()}`;
-}
-
-function classifyLayout(headline?: string, bodyText?: string): LayoutPattern {
-  if (!headline && !bodyText) return "hero-image-top";
-  if (headline && headline.length > 50) return "text-overlay";
-  if (bodyText && bodyText.length > 100) return "text-overlay";
-  return "hero-image-top";
 }
 
 function extractCTA(text?: string): string | undefined {
@@ -43,13 +36,19 @@ function extractCTA(text?: string): string | undefined {
   return undefined;
 }
 
+// Upscale Facebook thumbnail URLs to larger images
+function upscaleImageUrl(url: string): string {
+  if (!url) return url;
+  // Replace small thumbnail size params with larger ones
+  // s60x60 -> s600x600, s100x100 -> s600x600, etc.
+  return url.replace(/stp=dst-jpg_s\d+x\d+/, "stp=dst-jpg_s600x600");
+}
+
 interface ScrapedRawAd {
+  libraryId?: string;
   bodyText?: string;
   linkTitle?: string;
-  linkDescription?: string;
-  pageName?: string;
   startDate?: string;
-  snapshotUrl?: string;
   imageUrl?: string;
   platform?: string;
 }
@@ -97,26 +96,17 @@ export async function scrapeCompetitorAds(
     const rawAds = await page.evaluate((max: number) => {
       const ads: ScrapedRawAd[] = [];
 
-      // The Ad Library page contains "Library ID:" text for each ad.
-      // We find these markers and walk up to get the containing card.
-      // Each ad card contains: Library ID, started running date, image, body text, platforms.
-
-      // Strategy: find all elements containing "Library ID:" and use their
-      // ancestor container as the ad boundary.
+      // Find all "Library ID:" text nodes to locate ad cards
       const allElements = document.querySelectorAll("*");
       const adRoots: Element[] = [];
 
-      // Find distinct ad containers by looking for "Library ID:" text
       allElements.forEach((el) => {
         if (el.children.length === 0 && el.textContent?.includes("Library ID:")) {
-          // Walk up to find a meaningful container (usually 5-8 levels up)
           let container = el.parentElement;
-          for (let i = 0; i < 8 && container; i++) {
-            // Check if this container has both text content and an image
+          for (let i = 0; i < 10 && container; i++) {
             const hasImage = container.querySelector("img") !== null;
             const hasDate = container.textContent?.includes("Started running on") ?? false;
             if (hasImage && hasDate) {
-              // Make sure we haven't already captured this container
               if (!adRoots.some((r) => r === container || r.contains(container!) || container!.contains(r))) {
                 adRoots.push(container);
               }
@@ -140,45 +130,47 @@ export async function scrapeCompetitorAds(
         const dateMatch = allText.match(/Started running on\s+([\w\s,]+?\d{4})/);
         const startDate = dateMatch ? dateMatch[1].trim() : undefined;
 
-        // Extract all meaningful text blocks (body text, headlines)
+        // Extract meaningful text blocks, filtering out Meta UI noise
+        const noisePatterns = [
+          /Library ID:/,
+          /Started running on/,
+          /See ad details/,
+          /This ad has multiple versions/,
+          /use this creative and text/,
+          /^(Facebook|Instagram|Messenger|Audience Network|Active|Inactive)$/,
+          /^(Ad|Ads|About|See|More|Less|Report)$/,
+          /Multiple ad versions/,
+          /See Summary Details/,
+        ];
+
         const textBlocks: string[] = [];
         const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null);
         let node: Node | null;
         while ((node = walker.nextNode())) {
           const t = (node.textContent || "").trim();
-          // Filter out noise: dates, Library IDs, platform names, short labels
-          if (
-            t.length > 15 &&
-            t.length < 500 &&
-            !t.includes("Library ID:") &&
-            !t.includes("Started running on") &&
-            !t.includes("See ad details") &&
-            !t.match(/^(Facebook|Instagram|Messenger|Audience Network|Active|Inactive)$/)
-          ) {
-            // Avoid duplicates
-            if (!textBlocks.some((b) => b.includes(t) || t.includes(b))) {
+          if (t.length > 10 && t.length < 500) {
+            const isNoise = noisePatterns.some((p) => p.test(t));
+            if (!isNoise && !textBlocks.some((b) => b.includes(t) || t.includes(b))) {
               textBlocks.push(t);
             }
           }
         }
 
-        // Extract images
+        // Extract the best image (largest one, not tiny icons)
         const images = container.querySelectorAll("img");
         let imageUrl: string | undefined;
+        let bestSize = 0;
         images.forEach((img) => {
           const src = img.getAttribute("src") || "";
-          if ((src.includes("scontent") || src.includes("fbcdn")) && !imageUrl) {
-            imageUrl = src;
-          }
-        });
-
-        // Extract snapshot/detail link
-        const links = container.querySelectorAll("a");
-        let snapshotUrl: string | undefined;
-        links.forEach((link) => {
-          const href = link.getAttribute("href") || "";
-          if (href.includes("ads/library") && href.includes("id=")) {
-            snapshotUrl = href.startsWith("http") ? href : `https://www.facebook.com${href}`;
+          if (src.includes("scontent") || src.includes("fbcdn")) {
+            // Prefer images that appear larger in the DOM
+            const w = img.naturalWidth || img.width || 0;
+            const h = img.naturalHeight || img.height || 0;
+            const size = w * h;
+            if (!imageUrl || size > bestSize) {
+              imageUrl = src;
+              bestSize = size;
+            }
           }
         });
 
@@ -189,16 +181,11 @@ export async function scrapeCompetitorAds(
         if (allText.includes("Messenger")) platforms.push("Messenger");
         if (allText.includes("Audience Network")) platforms.push("Audience Network");
 
-        const bodyText = textBlocks[0];
-        const linkTitle = textBlocks.length > 1 ? textBlocks[1] : undefined;
-
         ads.push({
-          bodyText,
-          linkTitle,
-          linkDescription: textBlocks.length > 2 ? textBlocks[2] : undefined,
-          pageName: undefined,
+          libraryId,
+          bodyText: textBlocks[0],
+          linkTitle: textBlocks.length > 1 ? textBlocks[1] : undefined,
           startDate,
-          snapshotUrl,
           imageUrl,
           platform: platforms.length > 0 ? platforms.join(", ") : undefined,
         });
@@ -208,21 +195,24 @@ export async function scrapeCompetitorAds(
     }, maxAds);
 
     return rawAds.map((raw, i) => {
-      const allText = [raw.bodyText, raw.linkTitle, raw.linkDescription]
-        .filter(Boolean)
-        .join(" ");
+      const allText = [raw.bodyText, raw.linkTitle].filter(Boolean).join(" ");
+
+      // Build snapshot URL from Library ID
+      const adSnapshotUrl = raw.libraryId
+        ? `https://www.facebook.com/ads/library/?id=${raw.libraryId}`
+        : undefined;
 
       return {
-        id: `${competitorName.toLowerCase().replace(/\s+/g, "-")}-${i}`,
+        id: `${competitorName.toLowerCase().replace(/\s+/g, "-")}-${raw.libraryId || i}`,
         competitor: competitorName,
-        imageUrl: raw.imageUrl || "",
-        headline: raw.linkTitle,
-        bodyText: raw.bodyText,
+        imageUrl: upscaleImageUrl(raw.imageUrl || ""),
+        headline: raw.bodyText,
+        bodyText: raw.linkTitle,
         cta: extractCTA(allText),
         dominantColors: [],
-        layout: classifyLayout(raw.linkTitle, raw.bodyText),
+        layout: "hero-image-top" as const,
         scrapedAt: new Date().toISOString(),
-        adSnapshotUrl: raw.snapshotUrl,
+        adSnapshotUrl,
         platform: raw.platform,
         startDate: raw.startDate,
       };

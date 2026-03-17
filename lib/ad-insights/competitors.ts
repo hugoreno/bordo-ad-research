@@ -19,7 +19,7 @@ export const COMPETITORS: CompetitorConfig[] = [
     id: "cashman-casino",
     name: "Cashman Casino",
     slug: "cashman-casino",
-    searchTerms: "Cashman Casino Slots",
+    searchTerms: "Cashman Casino",
     color: "#EF4444",
   },
   {
