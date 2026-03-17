@@ -231,36 +231,34 @@ export async function scrapeCompetitorAds(
     }, maxAds);
 
     // Download images as base64 while the browser session is active
-    // (Facebook CDN URLs contain temporary auth tokens that expire)
-    const imageDataMap = new Map<string, string>();
-    for (const raw of rawAds) {
-      if (!raw.imageUrl) continue;
-      // Upscale thumbnail URL before downloading
-      const fullUrl = upscaleImageUrl(raw.imageUrl);
-      if (imageDataMap.has(raw.imageUrl)) continue;
-      try {
-        const dataUri = await page.evaluate(async (url: string) => {
+    // Facebook CDN URLs contain temporary auth tokens that expire after hours.
+    // We fetch each image from within the page context where cookies are valid.
+    const imageUrls = rawAds.map((a) => a.imageUrl || "").filter(Boolean);
+    const imageDataMap: Record<string, string> = await page.evaluate(async (urls: string[]) => {
+      const results: Record<string, string> = {};
+      const unique = [...new Set(urls)];
+
+      await Promise.all(
+        unique.map(async (url) => {
           try {
             const resp = await fetch(url);
-            if (!resp.ok) return null;
+            if (!resp.ok) return;
             const blob = await resp.blob();
-            return new Promise<string | null>((resolve) => {
+            const dataUri = await new Promise<string>((resolve, reject) => {
               const reader = new FileReader();
               reader.onloadend = () => resolve(reader.result as string);
-              reader.onerror = () => resolve(null);
+              reader.onerror = () => reject();
               reader.readAsDataURL(blob);
             });
+            results[url] = dataUri;
           } catch {
-            return null;
+            // skip
           }
-        }, fullUrl);
-        if (dataUri) {
-          imageDataMap.set(raw.imageUrl, dataUri);
-        }
-      } catch {
-        // Skip failed downloads
-      }
-    }
+        })
+      );
+
+      return results;
+    }, imageUrls);
 
     return rawAds.map((raw, i) => {
       const adSnapshotUrl = raw.libraryId
@@ -268,8 +266,8 @@ export async function scrapeCompetitorAds(
         : undefined;
 
       // Use base64 data URI if available, otherwise keep original URL as fallback
-      const imageUrl = (raw.imageUrl && imageDataMap.get(raw.imageUrl))
-        || upscaleImageUrl(raw.imageUrl || "");
+      const imageUrl = (raw.imageUrl && imageDataMap[raw.imageUrl])
+        || raw.imageUrl || "";
 
       return {
         id: `${competitorName.toLowerCase().replace(/\s+/g, "-")}-${raw.libraryId || i}`,
